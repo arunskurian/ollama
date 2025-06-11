@@ -154,14 +154,30 @@ func NewLlamaServer(gpus discover.GpuInfoList, modelPath string, f *ggml.GGML, a
 		}
 	}
 
-	// On linux and windows, over-allocating CPU memory will almost always result in an error
-	// Darwin has fully dynamic swap so has no direct concept of free swap space
-	if runtime.GOOS != "darwin" {
-		systemMemoryRequired := estimate.TotalSize - estimate.VRAMSize
-		available := systemFreeMemory + systemSwapFreeMemory
-		if systemMemoryRequired > available {
-			slog.Warn("model request too large for system", "requested", format.HumanBytes2(systemMemoryRequired), "available", available, "total", format.HumanBytes2(systemTotalMemory), "free", format.HumanBytes2(systemFreeMemory), "swap", format.HumanBytes2(systemSwapFreeMemory))
-			return nil, fmt.Errorf("model requires more system memory (%s) than is available (%s)", format.HumanBytes2(systemMemoryRequired), format.HumanBytes2(available))
+	// Env variable to bypass ollama's memory check guardrail.
+	if envconfig.AvailableMemoryCheckOverride() == 1 {
+		slog.Warn("OLLAMA_SKIP_MEMORY_CHECK set; bypassing memory check")
+	} else {
+		// On linux and windows, over-allocating CPU memory will almost always result in an error
+		// Darwin has fully dynamic swap so has no direct concept of free swap space
+		slog.Debug("OLLAMA_SKIP_MEMORY_CHECK not set; running memory check")
+		if runtime.GOOS != "darwin" {
+			systemMemoryRequired := estimate.TotalSize - estimate.VRAMSize
+			available := systemFreeMemory + systemSwapFreeMemory
+
+			// On Linux, reclaim ZFS ARC (size – c_min)
+			if runtime.GOOS == "linux" {
+				if reclaim, err := GetZFSReclaimableMemory(); err == nil {
+					slog.Info("reclaiming ZFS Arc cache size:", "size", format.HumanBytes2(reclaim))
+					available += reclaim
+				} else {
+					slog.Warn("failure while computing ZFS Arc cache size:", "error", err)
+				}
+			}
+			if systemMemoryRequired > available {
+				slog.Warn("model request too large for system", "requested", format.HumanBytes2(systemMemoryRequired), "available", available, "total", format.HumanBytes2(systemTotalMemory), "free", format.HumanBytes2(systemFreeMemory), "swap", format.HumanBytes2(systemSwapFreeMemory))
+				return nil, fmt.Errorf("model requires more system memory (%s) than is available (%s)", format.HumanBytes2(systemMemoryRequired), format.HumanBytes2(available))
+			}
 		}
 	}
 
@@ -797,8 +813,7 @@ func (s *llmServer) Completion(ctx context.Context, req CompletionRequest, fn fu
 
 	res, err := http.DefaultClient.Do(serverReq)
 	if err != nil {
-		slog.Error("post predict", "error", err)
-		return errors.New("model runner has unexpectedly stopped, this may be due to resource limitations or an internal error, check ollama server logs for details")
+		return fmt.Errorf("POST predict: %v", err)
 	}
 	defer res.Body.Close()
 

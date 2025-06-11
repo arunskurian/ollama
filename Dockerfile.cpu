@@ -27,8 +27,6 @@ RUN apt-get update && \
 
 # We are installing CMake because someCMakeLirecentCMakeLiissues on the repo indicates 3.22 problems
 # Ollama recommends a min of 3.27. 
-RUN echo ${TARGETARCH}
-RUN echo "XAVIER"
 RUN set -eux; \
     if [ "${TARGETARCH}" = "amd64" ]; then \
       CMAKE_ARCH=x86_64; \
