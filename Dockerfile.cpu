@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1.4
+
+# CPU-only Ollama Dockerfile
+# This Dockerfile builds a minimal Ollama image that only includes CPU support
+# Removes CUDA, ROCm, and JetPack GPU components
+
+# Build arguments
+ARG UBUNTU_VERSION=22.04
+ARG CMAKE_VERSION=3.31.2
+
+
+FROM ubuntu:${UBUNTU_VERSION} AS builder
+
+ARG TARGETARCH
+ARG CMAKE_VERSION
+
+
+# Install Build Dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      git \
+      golang-go \
+      curl \
+      ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# We are installing CMake because someCMakeLirecentCMakeLiissues on the repo indicates 3.22 problems
+# Ollama recommends a min of 3.27. 
+RUN echo ${TARGETARCH}
+RUN echo "XAVIER"
+RUN set -eux; \
+    if [ "${TARGETARCH}" = "amd64" ]; then \
+      CMAKE_ARCH=x86_64; \
+    elif [ "${TARGETARCH}" = "arm64" ]; then \
+      CMAKE_ARCH=aarch64; \
+    else \
+      echo >&2 "Unsupported arch: ${TARGETARCH}"; exit 1; \
+    fi; \
+    curl -fsSL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-${CMAKE_ARCH}.tar.gz" \
+      | tar --strip-components=1 -C /usr/local -xz
+
+
+WORKDIR /src/ollama
+COPY . /src/ollama
+
+RUN cmake -B build -S . \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_GPU=OFF \
+    -DCMAKE_INSTALL_PREFIX=/usr/local && \
+cmake --build build --parallel && \
+cmake --install build
+
+# Pick only Ollama & required libs 
+FROM ubuntu:${UBUNTU_VERSION} AS final
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      libstdc++6 && \
+    rm -rf /var/lib/apt/lists/*
+
+
+COPY --from=builder /usr/local/bin/ollama /usr/local/bin/ollama
+COPY --from=builder /usr/local/lib/libollama* /usr/local/lib/
+COPY --from=builder /usr/local/lib/ollama /usr/local/lib/ollama
+
+
+ENV OLLAMA_HOST=0.0.0.0:11434
+EXPOSE 11434
+
+ENTRYPOINT ["/usr/local/bin/ollama"]
+CMD ["serve"]
